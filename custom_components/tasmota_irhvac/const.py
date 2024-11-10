@@ -75,6 +75,10 @@ CONF_SWINGH = "default_swingh"
 CONF_TOGGLE_LIST = "toggle_list"
 CONF_IGNORE_OFF_TEMP = "ignore_off_temp"
 
+CONF_RAW_TOPIC = "raw_topic"
+CONF_TOGGLE_SWINGV_DATA = "toggle_swingv_data"
+CONF_TOGGLE_SWINGV_CODE = "toggle_swingv_code"
+
 # Platform specific default values
 DEFAULT_NAME = "IR AirConditioner"
 DEFAULT_STATE_TOPIC = "state"

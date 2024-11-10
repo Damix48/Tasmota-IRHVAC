@@ -160,6 +160,10 @@ from .const import (
     SERVICE_SET_SWINGV,
     SERVICE_SET_SWINGH,
     TOGGLE_ALL_LIST,
+
+    CONF_RAW_TOPIC,
+    CONF_TOGGLE_SWINGV_DATA,
+    CONF_TOGGLE_SWINGV_CODE,
 )
 
 DEFAULT_MODES_LIST = [
@@ -260,6 +264,10 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
             [vol.In(TOGGLE_ALL_LIST)],
         ),
         vol.Optional(CONF_IGNORE_OFF_TEMP, default=DEFAULT_IGNORE_OFF_TEMP): cv.boolean,
+
+        vol.Optional(CONF_RAW_TOPIC, default=""): cv.string,
+        vol.Optional(CONF_TOGGLE_SWINGV_DATA, default=""): cv.string,
+        vol.Optional(CONF_TOGGLE_SWINGV_CODE, default=""): cv.string,
     }
 )
 
@@ -536,6 +544,11 @@ class TasmotaIrhvac(ClimateEntity, RestoreEntity):
         self._fix_swingv = None
         self._fix_swingh = None
         self._toggle_list = config[CONF_TOGGLE_LIST]
+
+        self.raw_topic = config.get(CONF_RAW_TOPIC)
+        self.swingv_toggle_data = config.get(CONF_TOGGLE_SWINGV_DATA)
+        self.swingv_toggle_code = config.get(CONF_TOGGLE_SWINGV_CODE)
+
         self._state_mode = DEFAULT_STATE_MODE
         self._ignore_off_temp = config[CONF_IGNORE_OFF_TEMP]
         self._use_track_state_change_event = False
@@ -670,6 +683,20 @@ class TasmotaIrhvac(ClimateEntity, RestoreEntity):
 
             payload = json_payload["IRHVAC"]
 
+            if self.swingv_toggle_code != "":
+                _LOGGER.warning(f"_swingv: {self._swingv}")
+                _LOGGER.warning(
+                    f"swingv_toggle_code: {self.swingv_toggle_code}")
+                _LOGGER.warning(f"json_payload: {json_payload['Data']}")
+
+                if self.swingv_toggle_code in json_payload["Data"]:
+                    if self._swingv == "auto":
+                        payload["SwingV"] = "off"
+                    else:
+                        payload["SwingV"] = "auto"
+                else:
+                    payload["SwingV"] = self._swingv
+
             if payload["Vendor"] == self._vendor:
                 # All values in the payload are Optional
                 prev_power = self.power_mode
@@ -773,7 +800,12 @@ class TasmotaIrhvac(ClimateEntity, RestoreEntity):
                     setattr(self, "_" + key.lower(), "off")
 
                 # Update HA UI and State
-                self.async_schedule_update_ha_state()
+                if self.power_mode == STATE_OFF:
+                    self._swing_mode = SWING_OFF
+
+                await self.async_update_ha_state()
+                await self.async_send_cmd(save_only=True)
+                # self.async_schedule_update_ha_state()
 
                 # Check power sensor state
                 if (
@@ -1025,9 +1057,19 @@ class TasmotaIrhvac(ClimateEntity, RestoreEntity):
             return
         self._swing_mode = swing_mode
         # note: set _swingv and _swingh in send_ir() later
-        if not self._hvac_mode == HVACMode.OFF:
-            self.power_mode = STATE_ON
-        await self.async_send_cmd()
+        if self.swingv_toggle_data != "":
+            if self._swing_mode == SWING_VERTICAL:
+                payload = f"0,{self.swingv_toggle_data}"
+                await mqtt.async_publish(self.hass, self.raw_topic, payload)
+                await self.async_send_cmd(save_only=True)
+            elif self._swing_mode == SWING_OFF:
+                payload = f"0,{self.swingv_toggle_data}"
+                await mqtt.async_publish(self.hass, self.raw_topic, payload)
+                await self.async_send_cmd(save_only=True)
+        else:
+            if not self._hvac_mode == HVACMode.OFF:
+                self.power_mode = STATE_ON
+            await self.async_send_cmd()
 
     async def async_set_econo(self, econo, state_mode):
         """Set new target econo mode."""
@@ -1131,8 +1173,9 @@ class TasmotaIrhvac(ClimateEntity, RestoreEntity):
         self._state_mode = state_mode
         await self.async_send_cmd()
 
-    async def async_send_cmd(self):
-        await self.send_ir()
+    async def async_send_cmd(self, save_only=False):
+        await self.send_ir(save_only)
+        await self.async_update_ha_state()
 
     @property
     def min_temp(self):
@@ -1252,7 +1295,7 @@ class TasmotaIrhvac(ClimateEntity, RestoreEntity):
             self._enabled = True
             self.power_mode = STATE_ON
 
-    async def send_ir(self):
+    async def send_ir(self, save_only=False):
         """Send the payload to tasmota mqtt topic."""
         fan_speed = self.fan_mode
         # tweak for some ELECTRA_AC devices
@@ -1277,9 +1320,17 @@ class TasmotaIrhvac(ClimateEntity, RestoreEntity):
         _dt = dt_util.now()
         _min = _dt.hour * 60 + _dt.minute
 
+        if self.swingv_toggle_code != "":
+            if self.power_mode == STATE_OFF:
+                self._swing_mode = SWING_OFF
+                self._swingv = STATE_OFF
+                self._swingh = STATE_OFF
+
         # Populate the payload
         payload_data = {
-            "StateMode": self._state_mode,
+            "StateMode":  "SendStore" if not save_only else "StoreOnly",
+
+            # "StateMode": self._state_mode,
             "Vendor": self._vendor,
             "Model": self._model,
             "Power": self.power_mode,
